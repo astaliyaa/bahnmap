@@ -12,4 +12,3 @@ build/
 .DS_Store
 .swiftpm/
 BahnMap/Info.plist
-signing/

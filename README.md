@@ -22,7 +22,7 @@ Limitations: timetable data only, so no live delays or cancellations. The GTFS f
 
 ## Install on your iPhone
 
-See **[docs/SETUP.md](docs/SETUP.md)**. It's a one-time setup of certificates and secrets, and after that every push to `main` lands in TestFlight.
+See **[docs/SETUP.md](docs/SETUP.md)**. Add 4 repository secrets (`APPLE_TEAM_ID`, `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`) and create the app in App Store Connect. After that, every push to `main` lands in TestFlight.
 
 ## Testing the engine without a Mac
 
