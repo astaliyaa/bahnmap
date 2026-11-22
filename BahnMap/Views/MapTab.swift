@@ -159,7 +159,7 @@ struct ReachPanel: View {
     @Environment(AppModel.self) private var model
     @State private var showList = false
 
-    private let rideOptions: [(String, Int)] = [("Direct", 1), ("≤ 1 change", 2), ("≤ 2", 3), ("Any", 8)]
+    private let rideOptions: [Int: String] = [1: "Direct", 2: "≤ 1 change", 3: "≤ 2", 8: "Any"]
 
     var body: some View {
         if let tt = model.timetable, let reach = model.reach {
@@ -194,7 +194,7 @@ struct ReachPanel: View {
                            in: 15...480, step: 15)
                 }
                 Picker("Changes", selection: Binding(get: { model.reach?.maxRides ?? 8 }, set: { model.reach?.maxRides = $0 })) {
-                    ForEach(rideOptions, id: \.1) { Text($0.0).tag($0.1) }
+                    ForEach([1, 2, 3, 8], id: \.self) { Text(rideOptions[$0] ?? "").tag($0) }
                 }
                 .pickerStyle(.segmented)
                 HStack {

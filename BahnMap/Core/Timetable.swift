@@ -31,6 +31,11 @@ public struct TripStop: Identifiable, Hashable, Sendable {
     public let platform: String
 }
 
+public struct LineInfo: Hashable, Sendable {
+    public let name: String
+    public let category: LineCategory
+}
+
 public struct NetworkEdge: Sendable {
     public let a: Int32
     public let b: Int32
@@ -147,7 +152,7 @@ public final class Timetable: @unchecked Sendable {
     public var lastDate: (year: Int, month: Int, day: Int) { CivilDate.components(Int(data.firstDay + data.dayCount - 1)) }
 
     /// Distinct lines serving a station, sorted.
-    public func lines(at station: Int32) -> [(name: String, category: LineCategory)] {
+    public func lines(at station: Int32) -> [LineInfo] {
         var seen: Set<Int32> = []
         for k in stationEventStart[Int(station)]..<stationEventStart[Int(station) + 1] {
             seen.insert(data.tripRoute[Int(stTrip[Int(stationEvents[Int(k)])])])
@@ -156,7 +161,7 @@ public final class Timetable: @unchecked Sendable {
         for r in seen {
             names[data.routeNames[Int(r)]] = LineCategory(rawValue: data.routeCategory[Int(r)]) ?? .other
         }
-        return names.map { ($0.key, $0.value) }.sorted {
+        return names.map { LineInfo(name: $0.key, category: $0.value) }.sorted {
             $0.category != $1.category ? $0.category.rawValue < $1.category.rawValue
                 : $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
