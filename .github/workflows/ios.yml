@@ -1,0 +1,232 @@
+name: iOS build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      testflight:
+        description: "Sign and upload to TestFlight"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  XCODEGEN_VERSION: "2.42.0"
+
+jobs:
+  # Compiles the app for the simulator on every push, so compile errors show up without signing.
+  build:
+    name: Build (simulator)
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app | grep -v -i beta | sort -V | tail -1)
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        env:
+          BUNDLE_ID: ${{ vars.BUNDLE_ID || 'com.example.bahnmap' }}
+          TEAM_ID: ""
+          CODE_SIGN_STYLE: Automatic
+          CODE_SIGN_IDENTITY: ""
+          PROFILE_NAME: ""
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: xcodegen generate
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild -project BahnMap.xcodeproj -scheme BahnMap \
+            -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO build | tee build.log | grep -E "error:|warning: .*BahnMap/|\*\* BUILD" || true
+          grep -q "\*\* BUILD SUCCEEDED \*\*" build.log
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
+  # Signs, archives and uploads to TestFlight. Runs on pushes to main and on manual runs.
+  testflight:
+    name: Archive & TestFlight
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.testflight || github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      SIGNING_KEY_PEM: ${{ secrets.SIGNING_KEY_PEM }}
+      SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
+      BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+      P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+      PROVISION_PROFILE_BASE64: ${{ secrets.PROVISION_PROFILE_BASE64 }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets
+        run: |
+          missing=""
+          if [ -z "$PROVISION_PROFILE_BASE64" ]; then missing="$missing PROVISION_PROFILE_BASE64"; fi
+          if [ -z "$BUILD_CERTIFICATE_BASE64" ] && { [ -z "$SIGNING_KEY_PEM" ] || [ -z "$SIGNING_CERT_BASE64" ]; }; then
+            missing="$missing SIGNING_KEY_PEM+SIGNING_CERT_BASE64 (or BUILD_CERTIFICATE_BASE64+P12_PASSWORD)"
+          fi
+          for v in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8; do
+            if [ -z "${!v}" ]; then missing="$missing $v"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing. See docs/SETUP.md."
+            exit 1
+          fi
+
+      - name: Select newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app | grep -v -i beta | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Install signing certificate and provisioning profile
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(/usr/bin/openssl rand -hex 24)
+          P12="$RUNNER_TEMP/cert.p12"
+
+          if [ -n "$BUILD_CERTIFICATE_BASE64" ]; then
+            echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode > "$P12"
+            PASS="$P12_PASSWORD"
+          else
+            # Build the .p12 here with macOS' own openssl so the keychain can always read it.
+            printf '%s\n' "$SIGNING_KEY_PEM" > "$RUNNER_TEMP/key.pem"
+            echo -n "$SIGNING_CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.cer"
+            if ! /usr/bin/openssl x509 -inform DER -in "$RUNNER_TEMP/cert.cer" -out "$RUNNER_TEMP/cert.pem" 2>/dev/null; then
+              /usr/bin/openssl x509 -in "$RUNNER_TEMP/cert.cer" -out "$RUNNER_TEMP/cert.pem"
+            fi
+            PASS=$(/usr/bin/openssl rand -hex 12)
+            /usr/bin/openssl pkcs12 -export -inkey "$RUNNER_TEMP/key.pem" -in "$RUNNER_TEMP/cert.pem" \
+              -out "$P12" -passout pass:"$PASS"
+            rm -f "$RUNNER_TEMP/key.pem"
+          fi
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$P12" -P "$PASS" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          rm -f "$P12"
+
+          PROFILE="$RUNNER_TEMP/profile.mobileprovision"
+          echo -n "$PROVISION_PROFILE_BASE64" | base64 --decode > "$PROFILE"
+          security cms -D -i "$PROFILE" > "$RUNNER_TEMP/profile.plist"
+          UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$RUNNER_TEMP/profile.plist")
+          NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$RUNNER_TEMP/profile.plist")
+          TEAM=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "$RUNNER_TEMP/profile.plist")
+          APPID=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$RUNNER_TEMP/profile.plist")
+          BUNDLE="${APPID#*.}"
+          for d in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$d"
+            cp "$PROFILE" "$d/$UUID.mobileprovision"
+          done
+          echo "Profile '$NAME' for $BUNDLE (team $TEAM)"
+          {
+            echo "PROFILE_NAME=$NAME"
+            echo "TEAM_ID=$TEAM"
+            echo "BUNDLE_ID=$BUNDLE"
+            echo "KEYCHAIN=$KEYCHAIN"
+          } >> "$GITHUB_ENV"
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        env:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Apple Distribution
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: xcodegen generate
+
+      - name: Archive
+        run: |
+          set -o pipefail
+          xcodebuild -project BahnMap.xcodeproj -scheme BahnMap \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/BahnMap.xcarchive" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN" \
+            archive | tee archive.log | grep -E "error:|\*\* ARCHIVE" || true
+          grep -q "\*\* ARCHIVE SUCCEEDED \*\*" archive.log
+
+      - name: Export IPA
+        run: |
+          set -o pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict><key>$BUNDLE_ID</key><string>$PROFILE_NAME</string></dict>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/BahnMap.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" | tee export.log | tail -5
+          ls -la "$RUNNER_TEMP/export"
+
+      - name: Upload to TestFlight
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.appstoreconnect/private_keys
+          printf '%s\n' "$ASC_KEY_P8" > ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8
+          IPA=$(ls "$RUNNER_TEMP"/export/*.ipa | head -1)
+          xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" --output-format normal
+          echo "### Uploaded build ${{ github.run_number }} to App Store Connect" >> "$GITHUB_STEP_SUMMARY"
+          echo "It appears in TestFlight after Apple finishes processing (usually 5–15 minutes)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep IPA as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BahnMap-ipa-${{ github.run_number }}
+          path: ${{ runner.temp }}/export/*.ipa
+          retention-days: 14
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-logs
+          path: |
+            archive.log
+            export.log
+
+      - name: Clean up keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN:-}" ]; then security delete-keychain "$KEYCHAIN" || true; fi
+          rm -rf ~/.appstoreconnect/private_keys

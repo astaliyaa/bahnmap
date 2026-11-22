@@ -1,0 +1,15 @@
+.build/
+*.xcodeproj/
+DerivedData/
+build/
+*.ipa
+*.p12
+*.mobileprovision
+*.p8
+*.key
+*.csr
+*.cer
+.DS_Store
+.swiftpm/
+BahnMap/Info.plist
+signing/
