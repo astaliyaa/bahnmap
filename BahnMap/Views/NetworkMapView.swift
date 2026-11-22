@@ -113,7 +113,7 @@ struct NetworkMapView: UIViewRepresentable {
             if parent.showNetwork != networkShown {
                 networkShown = parent.showNetwork
                 if networkShown {
-                    map.insertOverlays(networkOverlays, at: 0, level: .aboveRoads)
+                    map.addOverlays(networkOverlays, level: .aboveRoads)
                 } else {
                     map.removeOverlays(networkOverlays)
                 }

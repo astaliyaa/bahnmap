@@ -25,7 +25,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Select newest Xcode
         run: |
@@ -58,7 +58,7 @@ jobs:
 
       - name: Upload build log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: build-log
           path: build.log
@@ -80,7 +80,7 @@ jobs:
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Check secrets
         run: |
@@ -210,7 +210,7 @@ jobs:
           echo "It appears in TestFlight after Apple finishes processing (usually 5–15 minutes)." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep IPA as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: BahnMap-ipa-${{ github.run_number }}
           path: ${{ runner.temp }}/export/*.ipa
@@ -218,7 +218,7 @@ jobs:
 
       - name: Upload logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: archive-logs
           path: |
